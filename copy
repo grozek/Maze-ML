@@ -1,0 +1,49 @@
+import matplotlib
+import numpy as np
+from env import StaticGridEnv
+from utils import plot_rewards, plot_heatmap
+
+env = StaticGridEnv(seed = 42)
+
+############################################################################
+######                Train agent using Q-learning                    ######
+############################################################################
+
+def train_agent(max_total_steps=100, alpha=0.1, gamma=0.99, epsilon=0.1):
+    state = env.reset()
+    q_table = np.zeros((env.observation_space.n, env.action_space.n))
+    
+    reward_per_episode = []
+    total_reward = 0
+    steps = 0
+    successes = 0
+
+    for step in range(max_total_steps):
+        # ε-greedy policy
+        if np.random.rand() < epsilon:
+            action = np.random.choice(env.action_space.n)
+        else:
+            action = np.argmax(q_table[state])
+
+        next_state, reward, done, info = env.step(action)
+
+        # Q-learning update
+        best_next_action = np.max(q_table[next_state])
+        q_table[state, action] += alpha * (reward + gamma * best_next_action - q_table[state, action])
+
+        state = next_state
+        total_reward += reward
+        steps += 1
+
+        if done:
+            reward_per_episode.append(total_reward)
+            if reward > 0:
+                successes += 1
+            state = env.reset()
+            total_reward = 0
+
+    success_rate = successes / len(reward_per_episode) if reward_per_episode else 0
+    avg_steps_per_episode = steps / len(reward_per_episode) if reward_per_episode else 0
+
+    env.close()
+    return q_table, reward_per_episode, success_rate, avg_steps_per_episode
