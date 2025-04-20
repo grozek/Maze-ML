@@ -21,102 +21,110 @@ env = StaticGridEnv(seed = 42)
 ######                Train agent using Q-learning                    ######
 ############################################################################
 
-state_space_size = 10 * 10       # 100 states
-action_space_size = 4            # 4 actions (up, down, left, right)
+# INITIALIZE: Field initialization of a q_table holding necessary info about the learning
+q_table = np.full((100,4), 0, dtype=float)
 
-q_table = np.zeros((state_space_size, action_space_size))
-q_table2 = np.zeros((10,10))
 
+# state_to_index
+# Translates the elements from 2D Matrix to 1D
 def state_to_index(state):
-    x, y = state
-    return x * 10 + y
-
-def neighbours(state):
     y, x = state
-    arr = []
-    if y <= 10 and x < 10: arr.append((y-1, x))
-    if y <= 8 and x < 10: arr.append((y+1, x))
-    if y < 10 and x <= 10: arr.append((y, x-1))
-    if y < 10 and x <= 8: arr.append((y, x+1))
-    print(f"arr in neighbours {arr}")
-    return arr
+    return y * 10 + x
 
-def neighbours_max(arr):
-    i = 0
-    while i < len(arr):
-        arr[i] = q_table2[arr[i]]
-        print(f"arr[i]:", arr[i])
-        i += 1
-    action = np.argmax(arr)
-    print(f"action: {action}")
-    return action
+# trackbackReward
+# If goal is reached, the reward is spread all across the states in q_table that the agent
+# followed en route. Prioritizes higher reward for elements closer to the goal.
+def trackbackReward(arr):
+    arr.reverse()
+    arr = list(dict.fromkeys(arr))
+    lr = 0.01
+    reward = 20
+    decay = 0.95
+    for i, j in arr:
+        q_table[i, j] += lr * (reward - q_table[i, j])
+        reward *= decay
 
-def match_action(action, state):
-    y, x = state
-    next_state = (y, x)
-    if action == 0:
-        if y <= 10 and x < 10: 
-            next_state = (y-1, x)
-    elif action == 1:
-        if y <= 8 and x < 10: 
-            next_state = (y+1, x)
-    elif action == 2:
-        if y < 10 and x <= 10: 
-            next_state = (y, x-1)
-    elif action == 3:
-        if y < 10 and x <= 8: 
-            next_state = (y, x+1)
+# updateWithRewards
+# Update the q_table at every regular step (not 'winning' step)
+# Uses changable learning rate, and discount factor
+def updateWithRewards(reward, action, state, next_state):
+    dis_fact = 0.95
+    lr = 0.01
+    q_table[state, action] += lr * (reward + dis_fact * np.max(q_table[next_state]) 
+                                                - q_table[state, action])
         
-    print(f"next: {next_state}")
-    return next_state
-
-
-# NEXT FIX: when we reach the botom (end of map), the agent just cant move futher
-# currently it updates the field its on to -1: line 71 but it should instead move right
-# in output arrneighbours are printed, and when there are 3 of them then argmax returns the
-# index of max. but because in neighbours we do not clear up which neighbour is missing
-# which results in going wrong direction. so next step is to change that to avoid the agent
-# being stuck in place 
-def train_agent(max_total_steps=50000):
-    reward_per_episode = []
-    success_rate = 0
-    avg_steps_per_episode = 0
-
-    state = env.reset()
-    done = False
-    total_reward = 0
+# episodeValueUpdate
+# Update the elements that are refreshed at the start of every episode 
+def episodeValueUpdate(steps, state, total_episode_num, total_steps):
+    total_episode_num += 1
+    episode_reward = 0
+    trackbackArr = []
+    total_steps += steps
     steps = 0
+    return total_steps, state, total_episode_num, episode_reward, trackbackArr, steps
 
-    while not done and steps < 100:
-        # Take an action
-        #state_idx = state_to_index(state)
-        #action = np.argmax(q_table[state_idx][0])
 
-        action = neighbours_max(neighbours(state))
-        # Execute the action
-        next_state, reward, done, _ = env.step(action)
+# stepValueUpdate
+# Update the elements that are refreshed at every step of an episode
+def stepValueUpdate(episode_reward, reward, next_state, state, steps):
+    state = next_state  
+    steps += 1
+    episode_reward += reward
+    return episode_reward, state, steps
 
-        print(f"next_state: {next_state}")
-        print(f"reward: {reward}")
-        print(f"done: {done}")
-        #print(f"value at: {state_idx} and {action}: {q_table[state_idx][action]}")
-        # Update the reward
-        if reward < 0:
-            q_table2[match_action(action, state)] += reward
 
-        print(f"whole qtable: {q_table2}")
-        state = next_state
-        total_reward += reward
-        steps += 1
+# train_agent
+# Agent training algorithm that uses q-learning algorithm
+def train_agent(max_total_steps=10000):
 
-    # Render the environment
-    env.render (delay = 2 , episode =1 , learning_type = "Q - learning ", availability =0.8 , accuracy = 0.9)
-   
-    #env.close()
-    # Fill in tracking values
-    reward_per_episode.append(total_reward)
-    success_rate = 1 if reward > 0 else 0
-    avg_steps_per_episode = steps
+    # INITIALIZE: Return variables and helpful operational elements
+    reward_per_episode = []
+    exploration_prob = 0.5
+    total_episode_num = 0
+    total_steps = 0
+    steps = 0
+    success_num = 0
+    decay = 0.95
+
+    # TOTAL EPISODES LOOP: Iterates over all episodes, as long as max step # isnt reached
+    while total_steps < max_total_steps:
+        state = env.reset()
+        state = state_to_index(state)
+        total_steps, state, total_episode_num, episode_reward, trackbackArr, steps = episodeValueUpdate(steps, state, total_episode_num, total_steps)
+       
+        # EPISODE LOOP: every episode has max 100 steps to suceed
+        while steps < 100:
+            exploration_prob = exploration_prob * decay
+
+            # EXPLORATION vs EXPLOTIATION: with every iteration gain confidence in q_table
+            if np.random.rand() < exploration_prob:
+                action = np.random.randint(0, 3)  
+            else:
+                action = np.argmax(q_table[state])  
+
+            # ACTION: Perform action, update the statistics and update q_table with action rewards
+            next_state, reward, done, _ = env.step(action)
+            next_state = state_to_index(next_state)
+            trackbackArr.append((state, action))
+            updateWithRewards(reward, action, state, next_state)
+
+            # IF SUCCESS: Reward leading steps, update stats and break from loop
+            if done: 
+                trackbackReward(trackbackArr) 
+                success_num += 1 
+                break
+
+            # STEP UPDATE: Update the episode with the statistics
+            episode_reward, state, steps = stepValueUpdate(episode_reward, reward, next_state, state, steps)
+
+        reward_per_episode.append(episode_reward)
+        
+    # TOTAL STATS: calculate total-model statistics
+    avg_steps_per_episode = total_steps / total_episode_num
+    success_rate = (success_num / total_episode_num) * 100
+    # RENDER: rendering last episode
+    #env.render (delay = 2 , episode = total_episode_num , learning_type = "Q - learning", 
+    #           availability = 0.8 , accuracy = 0.9)
 
     return q_table, reward_per_episode, success_rate, avg_steps_per_episode
 
@@ -124,40 +132,120 @@ def train_agent(max_total_steps=50000):
 ############################################################################
 ######               Evaluate agent after training                    ######
 ############################################################################
-def evaluate_agent(
-        q_table,
-        max_total_steps
-):
-    # YOU MAY ADD ADDITIONAL PARAMETERS IF YOU WISH
-    
-    # MODIFY CODE HERE
-    
-    avg_reward_per_episode = 0
-    success_rate = 0
-    avg_steps_per_episode = 0
 
-    # return avg_reward_per_episode, success_rate, avg_steps_per_episode
+# evaluate_agent
+# Perform agent evaluation based on previously calculated q_table
+def evaluate_agent(q_table, max_total_steps):
+
+    # INITIALIZE: The variables needed to evaluate the returning variables
+    nr_of_steps = 0
+    nr_success = 0
+    nr_episodes = 0
+    total_reward = 0
+    total_steps = 0
+
+    # TOTAL EPISODES LOOP: As long as max step celling is not reached
+    while max_total_steps > total_steps:
+
+        # STEP UPDATE: Update the episode with the statistics
+        total_steps += nr_of_steps
+        current_state = env.reset()
+        current_state = state_to_index(current_state)
+        nr_episodes += 1
+        nr_of_steps = 0
+
+        # EPISODE LOOP: Perform the episode within 100 steps
+        while nr_of_steps < 100:
+
+            # ACTION: Perform based on q-table, and update statistics
+            action = np.argmax(q_table[current_state]) 
+            next_state, reward, done, _ = env.step(action)
+            next_state = state_to_index(next_state)
+            total_reward += reward
+            current_state = next_state
+            nr_of_steps += 1
+
+            # IF SUCCESS: Mark success and break from loop
+            if done:  
+                nr_success += 1 
+                break 
+
+    # TOTAL STATS: Calculate total statistics using data from loops
+    avg_reward_per_episode = total_reward /  nr_episodes
+    success_rate = (nr_success / nr_episodes) * 100
+    avg_steps_per_episode = total_steps / nr_episodes
+
+    return avg_reward_per_episode, success_rate, avg_steps_per_episode
 
 
 ############################################################################
 ######        Train agent using Q-learning with Teacher Advice        ######
 ############################################################################
-def train_agent_with_teacher(
-        teacher_q_table,
-        max_total_steps,
-        availability,
-        accuracy
-):
-    # YOU MAY ADD ADDITIONAL PARAMETERS IF YOU WISH
-    
-    # MODIFY CODE HERE
 
-    agent_q_table = None
-    avg_reward_per_episode = 0
-    success_rate = 0
-    avg_steps_per_episode = 0
+def perform_action (action, total_reward, nr_of_steps, nr_success):
+    next_state, reward, done, _ = env.step(action)
+    next_state = state_to_index(next_state)
+    total_reward += reward
+    current_state = next_state
+    nr_of_steps += 1
+    # IF SUCCESS: Mark success and break from loop
+    if done:  
+        nr_success += 1 
+    return action, current_state, total_reward, nr_of_steps, nr_success
+        
+#def epsilon_greedy ()
 
-    # return agent_q_table, avg_reward_per_episode, success_rate, avg_steps_per_episode
+def action_decision (teacher_q_table, availability, accuracy, current_state):
+    rand1 = np.random.rand()
+    rand2 = np.random.rand()
+    print(f"rand1: {rand1:.5f}, rand2: {rand2:.5f}")
+
+    if rand1 > availability:
+        if rand2 > accuracy:
+            action = teacher_q_table[current_state]
+            print(f"accurate")
+        else:
+            wrong_action = teacher_q_table[current_state]
+            action = teacher_q_table[current_state] - wrong_action
+            print(f"wrong")
+    else:
+        #action = ownAlgorithm()
+        action = 0
+        print(f"own")
+    return action
+
+
+
+def train_agent_with_teacher(teacher_q_table, max_total_steps, availability, accuracy):
+    agent_q_table = np.full((100,4), 0, dtype=float)
+
+    # INITIALIZE: The variables needed to evaluate the returning variables
+    nr_of_steps, nr_success = 0, 0
+    nr_success = 0
+    nr_episodes = 0
+    total_reward = 0
+    total_steps = 0
+    done = False
+
+    # TOTAL EPISODES LOOP: As long as max step celling is not reached
+    while max_total_steps > total_steps:
+
+        # STEP UPDATE: Update the episode with the statistics
+        total_steps += nr_of_steps
+        current_state = env.reset()
+        current_state = state_to_index(current_state)
+        nr_episodes += 1
+        nr_of_steps = 0
+
+        while nr_of_steps < 100 :
+            action = action_decision(teacher_q_table, availability, accuracy, current_state)
+            action, current_state, total_reward, nr_of_steps, nr_success = perform_action (action, total_reward, nr_of_steps, nr_success)
+
+    avg_reward_per_episode = total_reward /  nr_episodes
+    success_rate = (nr_success / nr_episodes) * 100
+    avg_steps_per_episode = total_steps / nr_episodes
+
+    return agent_q_table, avg_reward_per_episode, success_rate, avg_steps_per_episode
 
 
 ############################################################################
@@ -168,31 +256,31 @@ def main():
     TEACHER_AVAILABILITY = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     TEACHER_ACCURACY = [0.2, 0.4, 0.6, 0.8, 1.0]
 
-    q_table, reward_per_episode, success_rate, avg_steps_per_episode = \
-        train_agent(50000)
+    q_table, reward_per_episode, success_rate, avg_steps_per_episode = train_agent(50000)
 
-    plot_rewards(reward_per_episode, "Reward per Episode for Q-learning")
+    #plot_rewards(reward_per_episode, "Reward per Episode for Q-learning")
 
-   # avg_reward_per_episode, success_rate, avg_steps_per_episode = \
-    #    evaluate_agent(q_table,10000)
+    avg_reward_per_episode, success_rate, avg_steps_per_episode = evaluate_agent(q_table, 10000)
 
-    # print("Average Reward per Episode:", avg_reward_per_episode)
-    print("Success Rate:", success_rate)
-    print("Steps per Episode:", avg_steps_per_episode)
+    #print("Average Reward per Episode:", avg_reward_per_episode)
+    #print("Success Rate:", success_rate)
+    #print("Steps per Episode:", avg_steps_per_episode)
     
     avg_rewards_train = np.zeros((6,5))
 
-    #agent_q_table, reward_per_episode, success_rate, avg_steps_per_episode = \
-     #   train_agent_with_teacher(q_table,10000,1,1)
+    agent_q_table, reward_per_episode, success_rate, avg_steps_per_episode = train_agent_with_teacher(q_table,10000,1,1)
 
-    plot_heatmap(
-        avg_rewards_train,
-        TEACHER_ACCURACY,      # X-axis: Teacher accuracy
-        TEACHER_AVAILABILITY,  # Y-axis: Teacher availability
-        "Average Reward for Different Teacher Availability and Accuracy\n (Q-learning Teacher)",  # Title of the heatmap
-        "Accuracy",            # X-axis label
-        "Availability",        # Y-axis label
-    )
+    print("Average Reward per Episode:", avg_reward_per_episode)
+    print("Success Rate:", success_rate)
+    print("Steps per Episode:", avg_steps_per_episode)
+    #plot_heatmap(
+    #    avg_rewards_train,
+    #    TEACHER_ACCURACY,      # X-axis: Teacher accuracy
+    #    TEACHER_AVAILABILITY,  # Y-axis: Teacher availability
+    #    "Average Reward for Different Teacher Availability and Accuracy\n (Q-learning Teacher)",  # Title of the heatmap
+    #    "Accuracy",            # X-axis label
+    #    "Availability",        # Y-axis label
+    #)
 
 if __name__ == '__main__':
     main()
