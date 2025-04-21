@@ -16,7 +16,7 @@ from utils import plot_rewards, plot_heatmap
 import os
 import time
 
-env = StaticGridEnv(seed = 42)
+env = StaticGridEnv(seed = 54)
 ############################################################################
 ######                Train agent using Q-learning                    ######
 ############################################################################
@@ -30,6 +30,11 @@ q_table = np.full((100,4), 0, dtype=float)
 def state_to_index(state):
     y, x = state
     return y * 10 + x
+
+def index_to_state(index):
+    y = index // 10
+    x = index % 10
+    return (y, x)
 
 # trackbackReward
 # If goal is reached, the reward is spread all across the states in q_table that the agent
@@ -182,50 +187,78 @@ def evaluate_agent(q_table, max_total_steps):
 ######        Train agent using Q-learning with Teacher Advice        ######
 ############################################################################
 
-def perform_action (action, total_reward, nr_of_steps, nr_success):
-    next_state, reward, done, _ = env.step(action)
-    next_state = state_to_index(next_state)
-    total_reward += reward
-    current_state = next_state
-    nr_of_steps += 1
-    # IF SUCCESS: Mark success and break from loop
-    if done:  
-        nr_success += 1 
-    return action, current_state, total_reward, nr_of_steps, nr_success
-        
-#def epsilon_greedy ()
-
-def action_decision (teacher_q_table, availability, accuracy, current_state):
-    rand1 = np.random.rand()
-    rand2 = np.random.rand()
-    print(f"rand1: {rand1:.5f}, rand2: {rand2:.5f}")
-
-    if rand1 > availability:
-        if rand2 > accuracy:
-            action = teacher_q_table[current_state]
-            print(f"accurate")
-        else:
-            wrong_action = teacher_q_table[current_state]
-            action = teacher_q_table[current_state] - wrong_action
-            print(f"wrong")
-    else:
-        #action = ownAlgorithm()
-        action = 0
-        print(f"own")
-    return action
-
-
-
-def train_agent_with_teacher(teacher_q_table, max_total_steps, availability, accuracy):
+# EGreedy algorithm
+# Uses epsilon learning to create agent's own learning algorithm that it works on 
+# alongside learning from the teacher
+class EGreedy():
     agent_q_table = np.full((100,4), 0, dtype=float)
 
+    def _init_ (self):
+        pass
+
+    # tracebackReward
+    # Creates EGreedy's own function to reward tiles on path that led to positive reward
+    def trackbackReward(arr):
+        arr.reverse()
+        arr = list(dict.fromkeys(arr))
+        lr = 0.2
+        reward = 20
+        decay = 0.95
+        for i, j in arr:
+            EGreedy.agent_q_table[(i, j)] += lr * (reward - EGreedy.agent_q_table[(i, j)])
+            reward *= decay
+
+# update_epsilon_greedy
+# On every iteration update the agent q-table with new learnings to improve the model
+def update_epsilon_greedy (action, current_state, reward):
+    lr = 0.2
+    old = EGreedy.agent_q_table[(current_state, action)]
+    EGreedy.agent_q_table[(current_state, action)] = old + lr * (reward - old)
+
+# teach_epsilon_greedy
+# When agent is learning from the teacher, empower the learning 
+def teach_epsilon_greedy (table, action, current_state, accuracy):
+    lr = 0.8
+    delta = table[current_state, action] - EGreedy.agent_q_table[current_state, action]
+    EGreedy.agent_q_table[current_state, action] += lr * delta
+
+
+# action_decision
+# Perform decision of what action should be taken based on teachers accuracy and availbility
+# If teaching does not happen - agent works on its own epsilon algorithm
+def action_decision (teacher_q_table, availability, accuracy, current_state, epsilon):
+    rand1 = np.random.rand()
+    rand2 = np.random.rand()
+    
+    if rand1 < availability:
+        if rand2 < accuracy:
+            action = np.argmax(teacher_q_table[current_state])
+            teach_epsilon_greedy(teacher_q_table, action, current_state, accuracy)
+        else:
+            worst_action = np.argmax(teacher_q_table[current_state])
+            choices = [0, 1, 2, 3]
+            choices.remove(worst_action)
+            action = np.random.choice(choices)
+            #teach_epsilon_greedy(teacher_q_table, action, current_state, accuracy)
+    else:
+        if np.random.rand() < epsilon:
+            action = np.random.randint(0,4)
+        else:
+            action = np.argmax(EGreedy.agent_q_table[current_state])
+
+    return action, epsilon
+
+# train_agent_with_teacher
+# Given q-table of the teacher, if possible, agent learns from the teacher
+def train_agent_with_teacher(teacher_q_table, max_total_steps, availability, accuracy):
     # INITIALIZE: The variables needed to evaluate the returning variables
     nr_of_steps, nr_success = 0, 0
     nr_success = 0
     nr_episodes = 0
     total_reward = 0
     total_steps = 0
-    done = False
+    decay_rate = 0.95
+    epsilon = 0.2
 
     # TOTAL EPISODES LOOP: As long as max step celling is not reached
     while max_total_steps > total_steps:
@@ -236,16 +269,40 @@ def train_agent_with_teacher(teacher_q_table, max_total_steps, availability, acc
         current_state = state_to_index(current_state)
         nr_episodes += 1
         nr_of_steps = 0
+        trackbackArr = []
+        epsilon = max(0.01, epsilon * decay_rate)
 
-        while nr_of_steps < 100 :
-            action = action_decision(teacher_q_table, availability, accuracy, current_state)
-            action, current_state, total_reward, nr_of_steps, nr_success = perform_action (action, total_reward, nr_of_steps, nr_success)
+        while nr_of_steps < 200 :
+            # CALCULATE ACTON: based on teacher stats - either learn or do own algorithm
+            action, epsilon = action_decision(teacher_q_table, availability, accuracy, current_state, epsilon)
+            
+            # EPISODE UPDATE: variables get new values
+            next_state, reward, done, _ = env.step(action)
+            total_reward += reward
+            nr_of_steps += 1
+            next_state = state_to_index(next_state)
+            trackbackArr.append((current_state, action))
+        
+            # CALCULATE: the new cell values for the q-table
+            update_epsilon_greedy(action, current_state, reward)
+            
+            #  IF SUCCESS: Mark success and break from loop          
+            if done:  
+                nr_success += 1 
+                break
+            
+            # NEXT STEP: pass to next step
+            current_state = next_state
 
+        # IF SUCCEDED EPISODE: share the reward across all cells visitied in the episode
+        if done: EGreedy.trackbackReward(trackbackArr) 
+
+    # FINAL STATS: calculate to return
     avg_reward_per_episode = total_reward /  nr_episodes
     success_rate = (nr_success / nr_episodes) * 100
     avg_steps_per_episode = total_steps / nr_episodes
 
-    return agent_q_table, avg_reward_per_episode, success_rate, avg_steps_per_episode
+    return EGreedy.agent_q_table, avg_reward_per_episode, success_rate, avg_steps_per_episode
 
 
 ############################################################################
@@ -256,23 +313,36 @@ def main():
     TEACHER_AVAILABILITY = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     TEACHER_ACCURACY = [0.2, 0.4, 0.6, 0.8, 1.0]
 
-    q_table, reward_per_episode, success_rate, avg_steps_per_episode = train_agent(50000)
-
-    #plot_rewards(reward_per_episode, "Reward per Episode for Q-learning")
-
-    avg_reward_per_episode, success_rate, avg_steps_per_episode = evaluate_agent(q_table, 10000)
-
-    #print("Average Reward per Episode:", avg_reward_per_episode)
-    #print("Success Rate:", success_rate)
-    #print("Steps per Episode:", avg_steps_per_episode)
-    
     avg_rewards_train = np.zeros((6,5))
+    suc = 0
+    i = 0
+    ac = 0
+    av = 0
+    lowest_suc = 100
+    while i < 1:
+        for av in TEACHER_AVAILABILITY:
+            for ac in TEACHER_ACCURACY:
+                q_table, reward_per_episode, success_rate_b, avg_steps_per_episode = train_agent(50000)
 
-    agent_q_table, reward_per_episode, success_rate, avg_steps_per_episode = train_agent_with_teacher(q_table,10000,1,1)
+            #plot_rewards(reward_per_episode, "Reward per Episode for Q-learning")
 
-    print("Average Reward per Episode:", avg_reward_per_episode)
-    print("Success Rate:", success_rate)
-    print("Steps per Episode:", avg_steps_per_episode)
+                avg_reward_per_episode, success_rate_t, avg_steps_per_episode = evaluate_agent(q_table, 50000)
+
+            #print("Average Reward per Episode:", avg_reward_per_episode)
+            #print("Success Rate:", success_rate)
+            #print("Steps per Episode:", avg_steps_per_episode)
+                #agent_q_table, reward_per_episode, success_rate, avg_steps_per_episode = train_agent_with_teacher(q_table,10000, random.choice(TEACHER_AVAILABILITY),random.choice(TEACHER_ACCURACY))
+                print(f"AVAILABILITY {av},          ACCURACY: {ac}")
+                agent_q_table, reward_per_episode, success_rate, avg_steps_per_episode = train_agent_with_teacher(q_table,10000, av, ac)
+                suc = ((suc * i) + success_rate) / (i + 1)
+                print("Average Reward per Episode:", reward_per_episode)
+                print("Success Rate:", success_rate)
+                print("Steps per Episode:", avg_steps_per_episode)
+                print("Running average success rate:", suc)
+                if suc < lowest_suc: lowest_suc = suc
+
+        print(f"lowest success: {lowest_suc}")
+        i += 1
     #plot_heatmap(
     #    avg_rewards_train,
     #    TEACHER_ACCURACY,      # X-axis: Teacher accuracy
